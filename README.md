@@ -1,80 +1,81 @@
-# pihole-admiral-bypass
+# pihole-adblockerblocker-blocker
 
-An automated, zero-maintenance Pi-hole allowlist synchronizer that neutralizes **Admiral** and **Raptive (AdThrive) + Ad-Shield** ("Disable your adblocker") walls across news, recipe, and media sites while keeping actual display and video ads blocked at the DNS layer.
+An automated, zero-maintenance Pi-hole allowlist synchronizer that neutralizes "adblocker-blocker" walls across news, recipe, streaming, and utility sites while keeping actual display and video ads blocked at the DNS layer.
+
+Covers the major enterprise anti-adblock, adblock-recovery, and ad-stack verification providers:
+* **Admiral** (`getadmiral.com` + 2,800+ rotating domains)
+* **Ad-Shield** (`html-load.com` / `content-loader.com` + EasyList rotating domains)
+* **Raptive / AdThrive** (`ads.adthrive.com` `__adblocker` cookie gatekeeper)
+* **Clean.io / HUMAN** (`cadmus.script.ac` anti-malvertising guard)
+* **Blockthrough** (`btloader.com` + `ab.dns-finder.com` DNS sinkhole canary)
+* **Sourcepoint CMP** (`cdn.privacy-mgmt.com`) & **Google IMA Video SDK** (`imasdk.googleapis.com`)
 
 Supports **Pi-hole v6** (via native *Subscribed Allowlists / Antigravity* using `@@||domain^` subdomain wildcards) and automatically falls back to batch SQLite `domainlist` syncing on **Pi-hole v5**.
 
 ---
 
-## Why Pi-hole Triggers Admiral Adblock Walls
+## Why Pi-hole Triggers Anti-Adblock Walls (And How This Script Defuses Them)
 
-Unlike browser extensions (such as uBlock Origin), which can strip inline `<script>` tags and hide DOM elements inside the browser, Pi-hole operates purely at the DNS layer.
+Unlike browser extensions (such as uBlock Origin), which can strip inline `<script>` tags and hide DOM elements inside the browser, Pi-hole operates purely at the DNS layer. Anti-adblock providers exploit this using a **two-stage architecture**:
+1. **Stage 1 (Inline HTML Failsafe):** An inline `<script>` embedded directly in the publisher's HTML tries to load an external detector script. If Pi-hole blocks that external domain (`0.0.0.0`), the inline `onerror` handler immediately locks or wipes the page.
+2. **Stage 2 (Internal Bait Checks):** Once the external detector script loads, it combines a **DOM cosmetic check** (which always passes on Pi-hole because DNS sinkholes don't hide HTML elements) with **1–2 specific network bait checks** (and their CNAME chains).
 
-Publishers using **Admiral** (such as TEGNA, McClatchy, Gannett, and Lee Enterprises news stations) use a **two-stage detection architecture** specifically designed to catch DNS sinkholes when community blocklists block Admiral's domains:
+By allowing the Stage-1 loader domains and the specific Stage-2 bait endpoints (plus dynamically resolving their live CNAME chains), the detector scripts conclude no adblocker is active and exit cleanly—while actual ad exchanges and ad servers (`securepubads.g.doubleclick.net`, `googleads.g.doubleclick.net`, `rubiconproject.com`, `adsrvr.org`, `adsafeprotected.com`, `taboola.com`, `bidder.criteo.com`, etc.) **remain 100% blocked by Pi-hole**.
 
 ```mermaid
 flowchart TD
-    A["Page Loads (Inline HTML Bootstrapper)"] --> B{"Load External Admiral Script<br/>(2,800+ Rotating Domains)"}
-    B -- "Blocked by Pi-hole (0.0.0.0)" --> C["Failsafe Triggered!<br/>Checks /favicon.ico & Injects<br/>Full-Screen Block Overlay (.DCDOr)"]
-    B -- "Allowed by This Script" --> D["Stage 2: Admiral Scoring Engine<br/>(Blocked Threshold X=50 | Pass Threshold Z=10)"]
-    D --> E["Detector 1: DOM Cosmetic Check<br/>(.vry-imprt-cnt, .adServer, .adbtn)"]
-    E -- "Pi-hole Doesn't Hide DOM Elements" --> F["Awards +6 Allowed Points (diss = 6)"]
-    F --> G{"Detector 8192: Network Fetch Check<br/>(aax.amazon-adsystem.com + CNAMEs)"}
-    G -- "Blocked by Pi-hole" --> H["Awards +25 Blocked Points<br/>Runs Detector 2 (+25) -> Total 50 -> BLOCKED"]
-    G -- "Allowed by This Script" --> I["Awards +4 Allowed Points<br/>Total diss = 10 (>= 10 Pass Threshold)<br/>Short-Circuits & Passes!"]
-    I --> J["Site Loads Normally<br/>(DoubleClick, Rubicon, Taboola, etc. Remain Blocked)"]
+    A["Page Loads (Inline HTML Bootstrapper)"] --> B{"Stage 1: Load External Detector Script<br/>(Admiral / Ad-Shield / Raptive / Blockthrough)"}
+    B -- "Blocked by Pi-hole (0.0.0.0)" --> C["Inline Failsafe Triggered!<br/>Wipes document.body or Injects<br/>Full-Screen Block Overlay"]
+    B -- "Allowed by This Script" --> D["Stage 2: Internal Detector Engine"]
+    D --> E["DOM Cosmetic Check<br/>(.adServer, .pub_300x250, .text-ad)"]
+    E -- "Pi-hole Never Hides DOM Elements" --> F["DOM Check Passes!"]
+    F --> G{"Network Bait Check<br/>(+ Dynamic CNAME Chain)"}
+    G -- "Blocked by Pi-hole" --> H["Detector Flags DNS Blocker -> Blocks Page"]
+    G -- "Allowed by This Script" --> I["Detector Short-Circuits & Passes!<br/>(Reports 'non-adblock')"]
+    I --> J["Site Loads Normally<br/>(DoubleClick, Rubicon, Taboola, Criteo Bidders Stay Blocked)"]
 ```
-
-### Stage 1: The Inline HTML Failsafe
-1. The publisher embeds an obfuscated inline `<script>` directly in the page's HTML (served from the first-party domain, so Pi-hole cannot block it).
-2. That inline script attempts to load Admiral's external detector script from one of **2,800+ rotating domains** (e.g., `woodstockcustom.com`, `succeedscene.com`, etc.).
-3. Standard Pi-hole blocklists (AdGuard DNS Filter, Hagezi, StevenBlack, Firebog) pull from EasyPrivacy's Admiral list and **block** those rotating domains.
-4. When all script load attempts fail and a `/favicon.ico` check confirms the user is online, the inline script immediately executes its hard-coded failsafe (`H()`) and injects the full-screen white overlay (`<div class="DCDOr">`):
-   > *"Something went wrong. Disable your adblocker..."*
-
-### Stage 2: The Two-Counter Scoring Engine (`adbs` vs. `diss`)
-Simply whitelisting the rotating Admiral domain in Pi-hole is not enough on its own. Once the external Admiral script loads, it runs a two-counter scoring engine:
-* **`adbs` (Adblocker Blocked Score — Threshold `X = 50`):** `hasAdBlocker()` becomes `true` when `adbs >= 50`.
-* **`diss` (Adblocker Disabled/Allowed Score — Threshold `Z = 10`):** `hasDisabledAdBlocker()` becomes `true` when `diss >= 10`.
-* **Final Block Condition:**
-  ```javascript
-  blocked = hasAdBlocker() && !hasDisabledAdBlocker()
-  ```
-
-Admiral executes **Group 0** (`[Detector 1, Detector 8192]`) first:
-1. **Detector `1` (DOM Cosmetic Check):** Injects bait elements (`.vry-imprt-cnt`, `.adServer`, `.adbtn`) and checks if a browser extension hid them via CSS. Because Pi-hole is a DNS sinkhole and never hides DOM elements, this check **always passes** for Pi-hole users and awards **+6 allowed points** (`diss = 6`, `adbs = 0`).
-2. **Detector `8192` (Network Fetch Check):** Performs a `fetch()` to `https://aax.amazon-adsystem.com/e/dtb/bid/...`:
-   * **If blocked by Pi-hole:** Awards **+25 blocked points** (`adbs = 25`, `diss = 6`). Because `diss < 10`, Admiral proceeds to Group 1 (**Detector `2`**, testing `dt.adsafeprotected.com` and `insight.adsrvr.org`), which adds another **+25 blocked points** (`adbs = 50 >= 50`) and blocks the page.
-   * **If allowed by Pi-hole:** Awards **+4 allowed points** (`diss = 6 + 4 = 10`, `adbs = 0`). Because `diss` reaches the `10`-point threshold (`hasDisabledAdBlocker() === true`), **Admiral short-circuits after Group 0**, skips the remaining detectors, and reports `blocked: false, hasAdBlocker: false`!
-
-Meanwhile, actual ad-serving domains (`securepubads.g.doubleclick.net`, `googleads.g.doubleclick.net`, `rubiconproject.com`, `adsrvr.org`, `adsafeprotected.com`, `taboola.com`, `criteo.net`, etc.) **remain 100% blocked by Pi-hole**.
 
 ---
 
-## Why Pi-hole Triggers Raptive (AdThrive) + Ad-Shield Walls
+## Provider-by-Provider Breakdown
 
-Thousands of food, recipe, and lifestyle sites use **Raptive (formerly AdThrive)** paired with **Ad-Shield (`html-load.com`)**:
+### 1. Admiral (`getadmiral.com` — News & Media Publishers)
+Used across TEGNA, McClatchy, Gannett, Lee Enterprises, and hundreds of news stations.
+* **Stage 1:** Inline script loads an external script from one of **2,800+ rotating domains** (e.g., `woodstockcustom.com`, `succeedscene.com`). If DNS-blocked, it checks `/favicon.ico` and injects `<div class="DCDOr">` (*"Disable your adblocker"*).
+* **Stage 2:** Runs a two-counter scoring engine (`adbs >= 50` blocked threshold vs. `diss >= 10` allowed threshold; `blocked = hasAdBlocker() && !hasDisabledAdBlocker()`).
+  * **Detector `1` (DOM check):** Passes on Pi-hole, awarding **+6 allowed points** (`diss = 6`).
+  * **Detector `8192` (`aax.amazon-adsystem.com`):** Allowing `aax.amazon-adsystem.com` (and its 3-hop CloudFront CNAME chain) awards **+4 allowed points** (`diss = 6 + 4 = 10`), reaching the `10`-point threshold (`hasDisabledAdBlocker() === true`) and causing Admiral to **short-circuit after Group 0**!
 
-1. **Stage 1: The Raptive `__adblocker` Cookie Gatekeeper (`ads.adthrive.com/abd/abd.js`)**
-   * An inline script on the publisher's page sends an `XMLHttpRequest` to `https://ads.adthrive.com/abd/abd.js`.
-   * If `ads.adthrive.com` is blocked by Pi-hole (`0.0.0.0`), the XHR fails (`status = 0`) and immediately sets a first-party cookie: `__adblocker=true` (valid for 5 minutes).
-   * If `ads.adthrive.com` is allowed, `abd.js` performs a DOM cosmetic check (which passes on Pi-hole) and a `fetch()` to `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js`. If both succeed, `abd.js` sets **`__adblocker=false`**.
-2. **Stage 2: The Ad-Shield Enforcer (`html-load.com/bundle.js`)**
-   * A second inline script (`id="rtv-6f0a"`) polls `document.cookie` for `__adblocker`.
-   * If `__adblocker=true`, it injects `<script src="https://html-load.com/bundle.js">`. When Pi-hole blocks `html-load.com`, the script's inline `onerror` handler wipes `document.body` every 100ms and displays the full-screen `"Please allow ads on this site"` modal (`report.error-report.com/modal`).
-   * **How this script neutralizes it:** By allowing `ads.adthrive.com` and `pagead2.googlesyndication.com` (the bait script URL), `abd.js` sets `__adblocker=false`, causing `rtv-6f0a` to exit immediately **without ever injecting `html-load.com` (Ad-Shield)**. Meanwhile, actual ad auction/rendering domains (`securepubads.g.doubleclick.net`, `googleads.g.doubleclick.net`, `tpc.googlesyndication.com`, `rubiconproject.com`, `criteo.net`, etc.) stay blocked by Pi-hole so no ads render.
+### 2. Raptive / AdThrive (`ads.adthrive.com` — Recipe & Lifestyle Sites)
+Used across thousands of food, recipe, and lifestyle blogs (often paired with Ad-Shield).
+* **Stage 1 (`__adblocker` Cookie Gatekeeper):** An inline script sends an XHR to `https://ads.adthrive.com/abd/abd.js`. If blocked by Pi-hole, the XHR fails (`status = 0`) and sets a first-party cookie `__adblocker=true`, which triggers `<script id="rtv-6f0a">` to inject Ad-Shield (`html-load.com`).
+* **Stage 2:** When `ads.adthrive.com` and its sole network bait `pagead2.googlesyndication.com` (`/pagead/js/adsbygoogle.js`) are allowed, `abd.js` sets **`__adblocker=false`**, and `rtv-6f0a` exits immediately **without ever injecting Ad-Shield**. Meanwhile, Raptive's actual ad server (`securepubads.g.doubleclick.net`) stays blocked.
+
+### 3. Ad-Shield (`html-load.com` / `content-loader.com` — Standalone & Raptive)
+Used on utility, wiki, gaming, and news sites (`freeconvert.com`, `calculatorsoup.com`, `cookieandkate.com`, `plainchicken.com`, `themediterraneandish.com`, `bild.de`, `indiatimes.com`, etc.).
+* **Stage 1:** Inline script loads `bundle.js` from `html-load.com`, `content-loader.com`, `cod.pleasantmelon.pro`, or rotating `.xyz`/`.com` domains. If DNS-blocked, the inline `onerror` handler runs `setInterval(() => document.body.remove(), 100)` and displays `https://report.error-report.com/modal`.
+* **Stage 2:** Once `bundle.js` loads, its `AdBlockDetector` checks `pagead2.googlesyndication.com` (`/pagead/js/adsbygoogle.js`) and `static.criteo.net` (`/js/ld/publishertag.prebid.js`). When both resolve (including `static.criteo.net`'s CNAME target), `AdBlockDetector` returns `{isDetected: false, circumventScore: 0}` (`reason: "non-adblock", shouldLoad: false`) and **skips loading the recovery script**—while Criteo's actual ad bidders (`bidder.criteo.com`, `gum.criteo.com`) stay blocked.
+
+### 4. Clean.io / HUMAN (`cadmus.script.ac`)
+An anti-malvertising security script (not an ad server) loaded from `cadmus.script.ac`. Some blocklists block `cadmus.script.ac` because it wraps `window.fetch`; on publishers whose ad stack verifies Clean.io initialization, blocking it triggers fallback walls. Allowing `cadmus.script.ac` never serves ads and prevents false-positive lockouts.
+
+### 5. Blockthrough (`btloader.com` / `dns-finder.com` / `ad-delivery.net`)
+Detects DNS sinkholes by comparing `wb.dns-finder.com/meta/dns` (unblocked control) against `ab.dns-finder.com/meta/dns` (blocked canary) and `ad-delivery.net/px.gif`. Allowing `btloader.com`, `ab.dns-finder.com`, `wb.dns-finder.com`, and `ad-delivery.net` (while keeping `btmessage.com` and ad exchanges blocked) neutralizes the DNS sinkhole check.
+
+### 6. Sourcepoint CMP (`cdn.privacy-mgmt.com`) & Google IMA SDK (`imasdk.googleapis.com`)
+Ensures GDPR/CCPA consent wrappers don't freeze page scrolling and news/streaming video players initialize cleanly before skipping blocked `doubleclick.net` video pre-rolls.
 
 ---
 
 ## How This Script Automates Everything Long-Term
 
-1. **Inverts the Upstream Admiral Blocklists into an Allowlist (~2,880+ Domains):**
-   Pulls and merges both community-maintained Admiral domain lists that blocklists use:
+1. **Pulls & Inverts Upstream Rotating Domain Lists (~2,960+ Domains):**
+   Automatically fetches and merges:
    * [EasyPrivacy Master Admiral List](https://raw.githubusercontent.com/easylist/easylist/master/easyprivacy/easyprivacy_trackingservers_admiral.txt) (~2,785+ domains)
    * [LanikSJ / uBO GetAdmiral Domains List](https://raw.githubusercontent.com/LanikSJ/ubo-filters/main/filters/getadmiral-domains.txt) (~1,667+ domains)
-   Whenever Admiral rotates to a new domain and filter maintainers add it to EasyPrivacy/uBO, your Pi-hole automatically allows it.
-2. **Dynamic CNAME Resolution for `aax.amazon-adsystem.com`:**
-   Pi-hole performs **CNAME deep inspection**—if any CNAME hop resolves to a blocked domain, Pi-hole blocks the request. Because `aax.amazon-adsystem.com` resolves through a 3-hop CloudFront CNAME chain (`aax-dtb-cf.amazon-adsystem.com` $\rightarrow$ `aax-dtb-cf.amazon-adsystem.amazon.com` $\rightarrow$ `*.cloudfront.net`), this script queries public DNS (`1.1.1.1` / `9.9.9.9`) on every run to dynamically discover and allow the current CNAME chain.
+   * [EasyList Ad-Shield Rotating Domains](https://raw.githubusercontent.com/easylist/easylist/master/easylist/easylist_adservers.txt) (`! ad-shield` sections)
+2. **Dynamic CNAME Chain Resolution:**
+   Queries public DNS (`1.1.1.1` / `9.9.9.9`) on every run to discover and allow the live CNAME chains behind every Stage-2 bait domain (such as `aax.amazon-adsystem.com` $\rightarrow$ `*.cloudfront.net` and `static.criteo.net` $\rightarrow$ `*.vip.prod.criteo.com`), so Pi-hole's CNAME deep inspection never trips even when CDN hashes change.
 3. **Differential Updates (`cmp -s`) & Safety Guards:**
    Runs once daily via `/etc/cron.daily/pihole-admiral-allowlist`. It verifies that at least 500 valid domains were parsed before touching `/etc/pihole/admiral-allowlist.txt` and **only** reloads Pi-hole (`pihole -g`) when the domain list actually changes.
 
@@ -85,14 +86,14 @@ Thousands of food, recipe, and lifestyle sites use **Raptive (formerly AdThrive)
 ### One-Line Install (Run on Your Pi-hole Host)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dapnepep/pihole-admiral-bypass/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/dapnepep/pihole-adblockerblocker-blocker/main/install.sh | sudo bash
 ```
 
 ### Or Clone and Install Manually
 
 ```bash
-git clone https://github.com/dapnepep/pihole-admiral-bypass.git
-cd pihole-admiral-bypass
+git clone https://github.com/dapnepep/pihole-adblockerblocker-blocker.git
+cd pihole-adblockerblocker-blocker
 sudo bash install.sh
 ```
 
@@ -100,20 +101,12 @@ sudo bash install.sh
 
 ## Verification
 
-After running the installer on your Pi-hole, verify that the Admiral script domains and Stage-2 bait domain resolve to real IPs while ad servers still resolve to `0.0.0.0`:
+After running the installer on your Pi-hole, verify that the anti-adblock loader and bait domains resolve to real IPs while ad servers still resolve to `0.0.0.0`:
 
 ```bash
-for d in woodstockcustom.com succeedscene.com aax.amazon-adsystem.com securepubads.g.doubleclick.net; do
+for d in woodstockcustom.com html-load.com aax.amazon-adsystem.com ads.adthrive.com pagead2.googlesyndication.com static.criteo.net securepubads.g.doubleclick.net; do
   printf "%-32s -> %s\n" "$d" "$(dig +short "$d" | tr '\n' ' ')"
 done
-```
-
-Expected output:
-```text
-woodstockcustom.com              -> 34.49.36.125
-succeedscene.com                 -> 104.18.11.50 104.18.10.50
-aax.amazon-adsystem.com          -> aax-dtb-cf.amazon-adsystem.com. ... 52.85.133.77
-securepubads.g.doubleclick.net   -> 0.0.0.0
 ```
 
 ---
@@ -128,8 +121,6 @@ securepubads.g.doubleclick.net   -> 0.0.0.0
   ```bash
   cat /var/log/pihole-admiral-allowlist.log
   ```
-* **Add custom Stage-2 bait domains (if needed in the future):**
-  Edit the `BAIT_DOMAINS` array in `/usr/local/sbin/update-pihole-admiral-allowlist`.
 * **Uninstall cleanly:**
   ```bash
   sudo bash install.sh --uninstall

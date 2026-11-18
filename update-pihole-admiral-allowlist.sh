@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ======================================================================
 # update-pihole-admiral-allowlist.sh
-# Automatically syncs rotating Admiral anti-adblock domains and Stage-2
-# bait CNAME chains into Pi-hole (v6 Antigravity or v5 Allowlist).
+# Automatically syncs rotating Admiral & Ad-Shield domains plus Stage-2
+# detector bait CNAME chains (Admiral, Raptive/AdThrive, Ad-Shield,
+# Clean.io, Blockthrough) into Pi-hole (v6 Antigravity or v5 Allowlist).
 # ======================================================================
 set -euo pipefail
 
@@ -14,6 +15,7 @@ COMMENT_TAG="auto-admiral-allowlist"
 GH_RAW="https://raw.githubusercontent.com"
 EP_PATH="easylist/easylist/master/easyprivacy"
 EP_FILE="easyprivacy_trackingservers_admiral.txt"
+EL_ADSERVERS="easylist/easylist/master/easylist/easylist_adservers.txt"
 UBO_PATH="LanikSJ/ubo-filters/main/filters/getadmiral-domains.txt"
 
 UPSTREAM_URLS=(
@@ -21,12 +23,37 @@ UPSTREAM_URLS=(
   "${GH_RAW}/${UBO_PATH}"
 )
 
-# Static Stage-2 detector bait domains tested by Admiral's scoring engine
+# Static Stage-1/Stage-2 detector & bait domains across major providers:
+# - Admiral:      getadmiral.com, aax.amazon-adsystem.com (+ CNAMEs)
+# - Raptive:      ads.adthrive.com, pagead2.googlesyndication.com
+# - Ad-Shield:    html-load.com, html-load.cc, content-loader.com,
+#                 pleasantmelon.pro, static.criteo.net (+ CNAMEs)
+# - Clean.io:     cadmus.script.ac
+# - Blockthrough: btloader.com, cdn.btloader.com, api.btloader.com,
+#                 ab.dns-finder.com, wb.dns-finder.com, ad-delivery.net
+# - Sourcepoint:  cdn.privacy-mgmt.com
+# - Google Video: imasdk.googleapis.com
 BAIT_DOMAINS=(
   "getadmiral.com"
   "aax.amazon-adsystem.com"
   "ads.adthrive.com"
   "pagead2.googlesyndication.com"
+  "html-load.com"
+  "fb.html-load.com"
+  "html-load.cc"
+  "content-loader.com"
+  "fb.content-loader.com"
+  "cod.pleasantmelon.pro"
+  "static.criteo.net"
+  "cadmus.script.ac"
+  "btloader.com"
+  "cdn.btloader.com"
+  "api.btloader.com"
+  "ab.dns-finder.com"
+  "wb.dns-finder.com"
+  "ad-delivery.net"
+  "cdn.privacy-mgmt.com"
+  "imasdk.googleapis.com"
 )
 
 sql_exec() {
@@ -55,6 +82,14 @@ for url in "${UPSTREAM_URLS[@]}"; do
     FETCHED=$((FETCHED + 1))
   fi
 done
+
+# 1b. Also extract rotating Ad-Shield domains from EasyList adservers
+if curl -fsSL --connect-timeout 10 --max-time 30 \
+   "${GH_RAW}/${EL_ADSERVERS}" 2>/dev/null \
+   | awk '/^! ad-shield/{f=1;next} /^!/{if(f&&!/^! https:/)f=0} f' \
+   >> "${TMP_RAW}"; then
+  printf "\n" >> "${TMP_RAW}"
+fi
 
 if [[ "${FETCHED}" -eq 0 ]]; then
   echo "WARN: Upstream fetch failed; keeping current list." >&2
