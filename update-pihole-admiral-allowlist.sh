@@ -25,6 +25,8 @@ UPSTREAM_URLS=(
 BAIT_DOMAINS=(
   "getadmiral.com"
   "aax.amazon-adsystem.com"
+  "ads.adthrive.com"
+  "pagead2.googlesyndication.com"
 )
 
 sql_exec() {

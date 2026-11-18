@@ -1,6 +1,6 @@
 # pihole-admiral-bypass
 
-An automated, zero-maintenance Pi-hole allowlist synchronizer that neutralizes **Admiral** ("Disable your adblocker") walls across news and media sites while keeping actual display and video ads blocked at the DNS layer.
+An automated, zero-maintenance Pi-hole allowlist synchronizer that neutralizes **Admiral** and **Raptive (AdThrive) + Ad-Shield** ("Disable your adblocker") walls across news, recipe, and media sites while keeping actual display and video ads blocked at the DNS layer.
 
 Supports **Pi-hole v6** (via native *Subscribed Allowlists / Antigravity* using `@@||domain^` subdomain wildcards) and automatically falls back to batch SQLite `domainlist` syncing on **Pi-hole v5**.
 
@@ -47,7 +47,22 @@ Admiral executes **Group 0** (`[Detector 1, Detector 8192]`) first:
    * **If blocked by Pi-hole:** Awards **+25 blocked points** (`adbs = 25`, `diss = 6`). Because `diss < 10`, Admiral proceeds to Group 1 (**Detector `2`**, testing `dt.adsafeprotected.com` and `insight.adsrvr.org`), which adds another **+25 blocked points** (`adbs = 50 >= 50`) and blocks the page.
    * **If allowed by Pi-hole:** Awards **+4 allowed points** (`diss = 6 + 4 = 10`, `adbs = 0`). Because `diss` reaches the `10`-point threshold (`hasDisabledAdBlocker() === true`), **Admiral short-circuits after Group 0**, skips the remaining detectors, and reports `blocked: false, hasAdBlocker: false`!
 
-Meanwhile, actual ad-serving domains (`securepubads.g.doubleclick.net`, `googlesyndication.com`, `rubiconproject.com`, `adsrvr.org`, `adsafeprotected.com`, `taboola.com`, `criteo.net`, etc.) **remain 100% blocked by Pi-hole**.
+Meanwhile, actual ad-serving domains (`securepubads.g.doubleclick.net`, `googleads.g.doubleclick.net`, `rubiconproject.com`, `adsrvr.org`, `adsafeprotected.com`, `taboola.com`, `criteo.net`, etc.) **remain 100% blocked by Pi-hole**.
+
+---
+
+## Why Pi-hole Triggers Raptive (AdThrive) + Ad-Shield Walls
+
+Thousands of food, recipe, and lifestyle sites use **Raptive (formerly AdThrive)** paired with **Ad-Shield (`html-load.com`)**:
+
+1. **Stage 1: The Raptive `__adblocker` Cookie Gatekeeper (`ads.adthrive.com/abd/abd.js`)**
+   * An inline script on the publisher's page sends an `XMLHttpRequest` to `https://ads.adthrive.com/abd/abd.js`.
+   * If `ads.adthrive.com` is blocked by Pi-hole (`0.0.0.0`), the XHR fails (`status = 0`) and immediately sets a first-party cookie: `__adblocker=true` (valid for 5 minutes).
+   * If `ads.adthrive.com` is allowed, `abd.js` performs a DOM cosmetic check (which passes on Pi-hole) and a `fetch()` to `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js`. If both succeed, `abd.js` sets **`__adblocker=false`**.
+2. **Stage 2: The Ad-Shield Enforcer (`html-load.com/bundle.js`)**
+   * A second inline script (`id="rtv-6f0a"`) polls `document.cookie` for `__adblocker`.
+   * If `__adblocker=true`, it injects `<script src="https://html-load.com/bundle.js">`. When Pi-hole blocks `html-load.com`, the script's inline `onerror` handler wipes `document.body` every 100ms and displays the full-screen `"Please allow ads on this site"` modal (`report.error-report.com/modal`).
+   * **How this script neutralizes it:** By allowing `ads.adthrive.com` and `pagead2.googlesyndication.com` (the bait script URL), `abd.js` sets `__adblocker=false`, causing `rtv-6f0a` to exit immediately **without ever injecting `html-load.com` (Ad-Shield)**. Meanwhile, actual ad auction/rendering domains (`securepubads.g.doubleclick.net`, `googleads.g.doubleclick.net`, `tpc.googlesyndication.com`, `rubiconproject.com`, `criteo.net`, etc.) stay blocked by Pi-hole so no ads render.
 
 ---
 
